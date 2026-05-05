@@ -152,7 +152,8 @@ const setBaseLayerOpacity = (nextOpacity) => {
   });
 };
 
-gsiAerial.addTo(map);
+// Use OpenStreetMap as the default base layer
+osmLayer.addTo(map);
 currentBaseOpacity = 0.8;
 setBaseLayerOpacity(currentBaseOpacity);
 const layerControl = L.control.layers(baseLayers, null, { position: 'bottomright' }).addTo(map);
@@ -421,7 +422,8 @@ const SHOP_TYPE_MAP = {
   '1': 'カフェ',
   '2': '食事',
   '3': '史跡',
-  '4': '公共施設'
+  '4': '公共施設',
+  '5': '会場'
 };
 const selectedShopTypes = new Set(Object.keys(SHOP_TYPE_MAP));
 let shopFilterRendered = false;
@@ -1237,6 +1239,12 @@ function buildShopPopupContent(shop) {
     ? `<p><a href="${externalUrl}" target="_blank" rel="noopener noreferrer">詳しくはこちら</a></p>`
     : '';
 
+  // navigation button for shops (same behavior as shishi popup)
+  const coords = extractCoordinates(shop);
+  const navHtml = coords
+    ? `<p><button onclick="startNavigation(${coords[0]},${coords[1]})" style="display:inline-block;margin-top:8px;padding:6px 8px;background:#007bff;color:#fff;border-radius:4px;border:none;cursor:pointer">ここまで行く</button></p>`
+    : '';
+
   // if no sanitized URL, collect candidate fields for debugging and show them
   let debugHtml = '';
   if (!externalUrl) {
@@ -1258,15 +1266,7 @@ function buildShopPopupContent(shop) {
       }
     }
 
-    if (Object.keys(candidates).length > 0) {
-      debugHtml = `<details style="margin-top:6px"><summary>デバッグ: URL候補</summary><pre style="white-space:pre-wrap">${escapeHtml(JSON.stringify(candidates, null, 2))}</pre></details>`;
-    }
-    // also include full shop object for deeper inspection
-    try {
-      debugHtml += `<details style="margin-top:6px"><summary>デバッグ: 全データ</summary><pre style="white-space:pre-wrap">${escapeHtml(JSON.stringify(shop, null, 2))}</pre></details>`;
-    } catch (e) {
-      // ignore
-    }
+    // debug details are intentionally hidden in production UI
   }
 
   return `
@@ -1275,6 +1275,7 @@ function buildShopPopupContent(shop) {
       ${buildDescriptionHtml(shop.description)}
       ${buildImageHtml(shopImageId, shop.name || '店舗画像')}
       ${photoCreditHtml}
+      ${navHtml}
       ${externalHtml}
       ${debugHtml}
     </div>
