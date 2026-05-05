@@ -139,8 +139,6 @@ const gsiAerial = L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/ort/{z}/{x}/
 
 const baseLayers = {
   OpenStreetMap: osmLayer,
-  '地理院地図（標準）': gsiStd,
-  '地理院地図（淡色）': gsiPale,
   '地理院地図（空中写真）': gsiAerial
 };
 let currentBaseOpacity = 1;
