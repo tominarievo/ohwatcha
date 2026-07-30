@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <title>表示データ更新 | ohwatcha</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        font-family: sans-serif;
+        background: #f8f8f8;
+        color: #222;
+      }
+      .wrap {
+        max-width: 680px;
+        margin: 32px auto;
+        padding: 20px;
+        background: #fff;
+        border: 1px solid #e5e5e5;
+        border-radius: 10px;
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 1.2rem;
+      }
+      p {
+        margin: 8px 0;
+        line-height: 1.6;
+      }
+      .status {
+        margin-top: 12px;
+        padding: 10px;
+        border-radius: 8px;
+        background: #f1f5f9;
+        white-space: pre-line;
+      }
+      a {
+        color: #0b63ce;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>表示データを更新しています...</h1>
+      <p>古い表示データを削除して、最新版を読み込みます。</p>
+      <p>数秒待っても遷移しない場合は <a id="home-link" href="/">トップへ戻る</a> を押してください。</p>
+      <div id="status" class="status">開始します...</div>
+    </main>
+
+    <script>
+      (async () => {
+        const version = Date.now();
+        const target = '/?v=' + version;
+
+        const statusEl = document.getElementById('status');
+        const homeLink = document.getElementById('home-link');
+        homeLink.href = target;
+
+        const logs = [];
+        const log = (msg) => {
+          logs.push(msg);
+          statusEl.textContent = logs.join('\n');
+        };
+
+        const deleteCookies = () => {
+          document.cookie.split(';').forEach((cookie) => {
+            const eqPos = cookie.indexOf('=');
+            const name = eqPos > -1 ? cookie.slice(0, eqPos).trim() : cookie.trim();
+
+            if (!name) return;
+
+            document.cookie = `${name}=; Max-Age=0; path=/`;
+            document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
+            document.cookie = `${name}=; Max-Age=0; path=/; domain=${location.hostname}`;
+            document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; domain=${location.hostname}`;
+          });
+        };
+
+        try {
+          log('1) Service Worker の登録解除を開始');
+          if ('serviceWorker' in navigator) {
+            const regs = await navigator.serviceWorker.getRegistrations();
+            await Promise.all(regs.map((r) => r.unregister()));
+            log(`  - ${regs.length} 件の Service Worker を解除`);
+          } else {
+            log('  - Service Worker 非対応');
+          }
+
+          log('2) Cache Storage の削除を開始');
+          if ('caches' in window) {
+            const names = await caches.keys();
+            await Promise.all(names.map((n) => caches.delete(n)));
+            log(`  - ${names.length} 件のキャッシュを削除`);
+          } else {
+            log('  - Cache Storage 非対応');
+          }
+
+          log('3) localStorage / sessionStorage の削除を開始');
+          try {
+            localStorage.clear();
+            sessionStorage.clear();
+            log('  - storage を削除');
+          } catch (e) {
+            log('  - storage の削除をスキップ');
+          }
+
+          log('4) IndexedDB の削除を開始');
+          try {
+            if (indexedDB.databases) {
+              const dbs = await indexedDB.databases();
+              await Promise.all(
+                dbs
+                  .filter((db) => db.name)
+                  .map((db) => indexedDB.deleteDatabase(db.name))
+              );
+              log(`  - ${dbs.length} 件の IndexedDB を削除`);
+            } else {
+              log('  - IndexedDB 一覧取得に非対応');
+            }
+          } catch (e) {
+            log('  - IndexedDB の削除をスキップ');
+          }
+
+          log('5) Cookie の削除を開始');
+          try {
+            deleteCookies();
+            log('  - 削除可能な Cookie を削除');
+          } catch (e) {
+            log('  - Cookie の削除をスキップ');
+          }
+
+          log('6) 最新版へ移動します...');
+          setTimeout(() => {
+            window.location.replace(target);
+          }, 500);
+        } catch (err) {
+          log('エラーが発生しました。手動でトップへ戻ってください。');
+          console.warn('reset cache failed', err);
+        }
+      })();
+    </script>
+  </body>
+</html>

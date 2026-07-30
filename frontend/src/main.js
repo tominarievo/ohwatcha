@@ -25,6 +25,8 @@ function disableRelativeApiBase(reason) {
   console.warn(`API base "${API_BASE}" disabled: ${reason}. Falling back to "${DIRECTUS_URL}".`);
 }
 const UPDATE_INTERVAL = 60000;
+const MAP_UPDATE_DEBOUNCE_MS = 250;
+const BANNER_RESERVED_HEIGHT_PX = 36;
 // Maximum age (hours) for showing recent locations; configurable via Vite env:
 // - VITE_SHISHI_MAX_AGE_HOURS (preferred)
 // - VITE_MAX_AGE_HOURS (fallback)
@@ -68,7 +70,8 @@ const shopIconCache = new Map();
 const MAP_MARKER_ICON_CLASS = 'ohwatcha-marker-icon';
 function getLeafletIconForUrl(url, { iconSize = [32, 32] } = {}) {
   if (!url) return null;
-  if (shopIconCache.has(url)) return shopIconCache.get(url);
+  const cacheKey = `${url}|${iconSize[0]}x${iconSize[1]}`;
+  if (shopIconCache.has(cacheKey)) return shopIconCache.get(cacheKey);
   try {
     const ic = L.icon({
       iconUrl: url,
@@ -77,7 +80,7 @@ function getLeafletIconForUrl(url, { iconSize = [32, 32] } = {}) {
       popupAnchor: [0, -iconSize[1]],
       className: MAP_MARKER_ICON_CLASS
     });
-    shopIconCache.set(url, ic);
+    shopIconCache.set(cacheKey, ic);
     return ic;
   } catch (e) {
     console.warn('create icon failed', e);
@@ -123,7 +126,7 @@ function getShopIconByType(type) {
   return fallback;
 }
 
-const map = L.map('map', { zoomControl: false }).setView([36.78058, 137.09447], 15);
+const map = L.map('map', { zoomControl: false }).setView([37.0751942, 136.9306693], 15);
 const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '&copy; OpenStreetMap contributors'
 });
@@ -279,37 +282,11 @@ function adjustMapForBanner() {
     const mapEl = document.getElementById('map');
     if (!mapEl) return;
     const banner = document.getElementById('sponsor-banner-wrap');
-
-    // Create a layout container that stacks map above banner using flex column
-    let appFrame = document.getElementById('app-frame');
-    if (!appFrame) {
-      appFrame = document.createElement('div');
-      appFrame.id = 'app-frame';
-      Object.assign(appFrame.style, {
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100dvh',
-        minHeight: '100vh',
-        width: '100%',
-        overflow: 'hidden'
-      });
-      // insert appFrame at the top of body
-      document.body.insertBefore(appFrame, document.body.firstChild);
-    }
-
-    // map uses all remaining vertical space above banner
-    if (mapEl.parentElement !== appFrame) appFrame.prepend(mapEl);
-    Object.assign(mapEl.style, {
-      position: 'relative',
-      flex: '1 1 auto',
-      width: '100%',
-      height: 'auto',
-      minHeight: '0'
-    });
+    const appFrame = document.getElementById('app-frame');
+    const mapFrame = mapEl.parentElement;
+    if (!appFrame || !mapFrame) return;
 
     if (banner) {
-      // move banner into appFrame before the map so it's above the map in flow
-      if (banner.parentElement !== appFrame) appFrame.insertBefore(banner, mapEl);
       // banner keeps intrinsic height and never overlaps map
       Object.assign(banner.style, {
         position: 'relative',
@@ -320,6 +297,10 @@ function adjustMapForBanner() {
         zIndex: '999',
         flex: '0 0 auto'
       });
+      // Keep a stable reserved height to avoid cumulative growth.
+      banner.style.minHeight = `${BANNER_RESERVED_HEIGHT_PX}px`;
+      const bannerHeight = Math.max(BANNER_RESERVED_HEIGHT_PX, banner.offsetHeight || 0);
+      mapFrame.style.height = `calc(100svh - ${bannerHeight}px)`;
     }
 
     // position the sidebar menu and locate button under the banner (if present)
@@ -415,13 +396,16 @@ if (homeIconUrl) {
 const shishiMarkers = {};
 // shop markers and data
 const shopMarkers = {};
+const shopMarkerMeta = {};
+const shishiMarkerMeta = {};
 let shopsData = [];
 const SHOP_TYPE_MAP = {
   '1': 'カフェ',
   '2': '食事',
   '3': '史跡',
   '4': '公共施設',
-  '5': '会場'
+  '5': '会場',
+  '6': '駐車場'
 };
 const selectedShopTypes = new Set(Object.keys(SHOP_TYPE_MAP));
 let shopFilterRendered = false;
@@ -598,8 +582,8 @@ locateBtn.addEventListener('click', () => {
   );
 });
 
-// if a banner wasn't created (no sponsor images), append locateBtn to body
-if (!document.getElementById('sponsor-banner-wrap')) {
+// keep locate button available even if banner fetch fails
+if (locateBtn.parentElement !== document.body) {
   document.body.appendChild(locateBtn);
 }
 
@@ -635,12 +619,20 @@ if (!document.getElementById('sponsor-banner-wrap')) {
 
     if (items.length === 0) {
       console.warn('banner: no displayable items', { primary: raw });
+      const slot = document.getElementById('sponsor-banner-wrap');
+      if (slot) {
+        slot.style.minHeight = '0px';
+        slot.style.padding = '0';
+        slot.style.display = 'none';
+      }
+      try { adjustMapForBanner(); } catch (e) {}
       return;
     }
 
-    // create container
-    const bannerWrap = document.createElement('div');
+    // create container (reuse reserved slot when present)
+    const bannerWrap = document.getElementById('sponsor-banner-wrap') || document.createElement('div');
     bannerWrap.id = 'sponsor-banner-wrap';
+    bannerWrap.innerHTML = '';
     Object.assign(bannerWrap.style, {
       position: 'relative',
       left: '0',
@@ -650,7 +642,8 @@ if (!document.getElementById('sponsor-banner-wrap')) {
       display: 'flex',
       justifyContent: 'center',
       alignItems: 'center',
-      padding: '6px',
+      minHeight: `${BANNER_RESERVED_HEIGHT_PX}px`,
+      padding: '2px 4px',
       background: 'rgba(255,255,255,0.95)',
       boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
       zIndex: 2002,
@@ -660,7 +653,7 @@ if (!document.getElementById('sponsor-banner-wrap')) {
     const img = document.createElement('img');
     img.id = 'sponsor-banner';
     Object.assign(img.style, {
-      maxHeight: '40px',
+      maxHeight: '28px',
       maxWidth: '90%',
       objectFit: 'contain',
       cursor: 'pointer',
@@ -688,9 +681,9 @@ if (!document.getElementById('sponsor-banner-wrap')) {
     const leftLabel = document.createElement('div');
     leftLabel.textContent = items[0].category || '';
     Object.assign(leftLabel.style, {
-      marginRight: '8px',
+      marginRight: '4px',
       flex: '0 0 auto',
-      fontSize: '0.95rem',
+      fontSize: '0.82rem',
       fontWeight: '600',
       color: '#333',
       pointerEvents: 'none'
@@ -714,7 +707,9 @@ if (!document.getElementById('sponsor-banner-wrap')) {
       console.warn('prepare locateBtn failed', e);
     }
 
-    document.body.insertBefore(bannerWrap, document.body.firstChild);
+    if (!bannerWrap.parentElement) {
+      document.body.insertBefore(bannerWrap, document.body.firstChild);
+    }
     try { adjustMapForBanner(); } catch (e) {}
 
     // rotation logic: load image URL and set anchor href if present
@@ -728,10 +723,10 @@ if (!document.getElementById('sponsor-banner-wrap')) {
         const textDiv = document.createElement('div');
         textDiv.className = 'banner-text';
         textDiv.textContent = it.name || '';
-        textDiv.style.fontSize = '1.1rem';
+        textDiv.style.fontSize = '0.92rem';
         textDiv.style.fontWeight = 'bold';
         textDiv.style.color = '#333';
-        textDiv.style.padding = '4px 12px';
+        textDiv.style.padding = '2px 8px';
         anchor.appendChild(textDiv);
       } else {
         anchor.querySelector('.banner-text').textContent = it.name || '';
@@ -922,18 +917,9 @@ function renderShopFilterUI() {
   const form = document.getElementById('shop-type-form');
   const toggle = document.getElementById('shop-filters-toggle');
 
-  // Only show checkboxes for types that have at least one record in shopsData
-  const typeHasRecord = {};
-  if (Array.isArray(shopsData)) {
-    shopsData.forEach((shop) => {
-      const type = shop.type || shop.category || shop.shop_type || null;
-      const typeVal = String(type ?? '');
-      if (typeVal) typeHasRecord[typeVal] = true;
-    });
-  }
-
+  // Keep every defined type selectable, even when the current API response
+  // does not contain a record for that type.
   Object.entries(SHOP_TYPE_MAP).forEach(([k, v]) => {
-    if (!typeHasRecord[k]) return; // skip types with no records
     const id = `shop-type-${k}`;
     const wrapper = document.createElement('div');
     wrapper.style.marginBottom = '6px';
@@ -969,29 +955,61 @@ function renderShopFilterUI() {
 }
 
 function renderShops() {
-  // remove existing markers
-  Object.keys(shopMarkers).forEach((id) => {
-    try { map.removeLayer(shopMarkers[id]); } catch (e) {}
-    delete shopMarkers[id];
-  });
-
   if (!Array.isArray(shopsData) || shopsData.length === 0) return;
+  const nextIds = new Set();
 
   shopsData.forEach((shop) => {
     const coords = extractCoordinates(shop);
     if (!coords) return;
     const id = String(shop.id ?? shop.name ?? `${coords[0]}:${coords[1]}`);
     const type = shop.type || shop.category || shop.shop_type || null;
-    const typeVal = String(type ?? '');
+    const typeVal = String(type ?? '').trim().normalize('NFKC');
     if (!selectedShopTypes.has(typeVal)) return; // filtered out
+    nextIds.add(id);
 
     const iconForShop = getShopIconByType(String(type || '').toLowerCase());
-    const marker = L.marker(coords, { icon: iconForShop || shopIcon }).addTo(map);
-    marker.bindPopup(buildShopPopupContent(shop), {
+    const nextPopup = buildShopPopupContent(shop);
+    const marker = shopMarkers[id];
+    const nextMeta = {
+      lat: coords[0],
+      lon: coords[1],
+      iconUrl: (iconForShop && iconForShop.options && iconForShop.options.iconUrl) || '',
+      popup: nextPopup
+    };
+
+    if (marker) {
+      const prev = shopMarkerMeta[id];
+      if (!prev || prev.lat !== nextMeta.lat || prev.lon !== nextMeta.lon) {
+        marker.setLatLng(coords);
+      }
+      if (!prev || prev.iconUrl !== nextMeta.iconUrl) {
+        marker.setIcon(iconForShop || shopIcon);
+      }
+      if (!prev || prev.popup !== nextMeta.popup) {
+        marker.setPopupContent(nextPopup);
+      }
+      shopMarkerMeta[id] = nextMeta;
+      return;
+    }
+
+    const newMarker = L.marker(coords, {
+      icon: iconForShop || shopIcon,
+      riseOnHover: true,
+      zIndexOffset: typeVal === '6' ? 1000 : 0
+    }).addTo(map);
+    newMarker.bindPopup(nextPopup, {
       maxWidth: 300,
       className: 'shop-popup-container'
     });
-    shopMarkers[id] = marker;
+    shopMarkers[id] = newMarker;
+    shopMarkerMeta[id] = nextMeta;
+  });
+
+  Object.keys(shopMarkers).forEach((id) => {
+    if (nextIds.has(id)) return;
+    try { map.removeLayer(shopMarkers[id]); } catch (e) {}
+    delete shopMarkers[id];
+    delete shopMarkerMeta[id];
   });
 }
 
@@ -1090,7 +1108,7 @@ function buildImageUrl(imageId) {
 }
 
 function buildEndpoints(collection) {
-  const path = `/items/${collection}`;
+  const path = `/items/${collection}?limit=-1&cache_bust=${Date.now()}`;
   const endpoints = [];
   if (shouldUseRelativeApiBase()) {
     endpoints.push(`${API_BASE}${path}`);
@@ -1181,7 +1199,14 @@ function buildDescriptionHtml(description) {
 function buildImageHtml(imageId, altText) {
   const imgUrl = buildImageUrl(imageId);
   return imgUrl
-    ? `<img src="${imgUrl}" alt="${escapeHtml(altText)}" style="max-width:100%; height:auto; max-height:40vh; display:block; object-fit:cover;">`
+    ? `<img
+        src="${imgUrl}"
+        alt="${escapeHtml(altText)}"
+        loading="lazy"
+        decoding="async"
+        fetchpriority="low"
+        style="max-width:100%;height:auto;max-height:40vh;display:block;object-fit:contain;"
+      >`
     : '<div class="popup-image-empty">画像なし</div>';
 }
 
@@ -1358,7 +1383,7 @@ async function fetchCollection(collection) {
 }
 
 async function fetchCollectionDirect(collection) {
-  const url = `${DIRECTUS_URL}/items/${collection}`;
+  const url = `${DIRECTUS_URL}/items/${collection}?limit=-1&cache_bust=${Date.now()}`;
   try {
     const headers = { Accept: 'application/json' };
     if (env.VITE_DIRECTUS_TOKEN) {
@@ -1389,6 +1414,8 @@ async function fetchShops() {
 }
 
 async function updateShishiLocation() {
+  if (map && map._animatingZoom) return;
+  if (map && map.dragging && map.dragging._draggable && map.dragging._draggable._moving) return;
   const shishiList = await fetchCollection('current');
   if (!shishiList) {
     return;
@@ -1422,25 +1449,40 @@ async function updateShishiLocation() {
 
     const id = String(shishi.id ?? shishi.name ?? `${coords[0]}:${coords[1]}`);
     seenIds.add(id);
+    const popup = buildShishiPopupContent(shishi);
+    const nextMeta = {
+      lat: coords[0],
+      lon: coords[1],
+      popup
+    };
 
     if (shishiMarkers[id]) {
-      shishiMarkers[id].setLatLng(coords);
-      shishiMarkers[id].setPopupContent(buildShishiPopupContent(shishi));
+      const marker = shishiMarkers[id];
+      const prev = shishiMarkerMeta[id];
+      if (!prev || prev.lat !== nextMeta.lat || prev.lon !== nextMeta.lon) {
+        marker.setLatLng(coords);
+      }
+      if (!prev || prev.popup !== nextMeta.popup) {
+        marker.setPopupContent(popup);
+      }
+      shishiMarkerMeta[id] = nextMeta;
       return;
     }
 
     const marker = L.marker(coords, { icon: shishiIcon }).addTo(map);
-    marker.bindPopup(buildShishiPopupContent(shishi), {
+    marker.bindPopup(popup, {
       maxWidth: 360,
       className: 'shishi-popup-container'
     });
     shishiMarkers[id] = marker;
+    shishiMarkerMeta[id] = nextMeta;
   });
 
   Object.keys(shishiMarkers).forEach((id) => {
     if (!seenIds.has(id)) {
       map.removeLayer(shishiMarkers[id]);
       delete shishiMarkers[id];
+      delete shishiMarkerMeta[id];
     }
   });
   // update sidebar list (show only recent items)
@@ -1450,6 +1492,36 @@ async function updateShishiLocation() {
     console.warn('renderShishiList failed', e);
   }
 }
+
+// Reserve banner area early to minimize map layout shifts when banners load.
+try {
+  const appFrame = document.getElementById('app-frame');
+  if (!appFrame) throw new Error('app-frame not found');
+  let bannerSlot = document.getElementById('sponsor-banner-wrap');
+  if (!bannerSlot) {
+    bannerSlot = document.createElement('div');
+    bannerSlot.id = 'sponsor-banner-wrap';
+    Object.assign(bannerSlot.style, {
+      minHeight: `${BANNER_RESERVED_HEIGHT_PX}px`,
+      width: '100%',
+      flex: '0 0 auto',
+      background: 'rgba(255,255,255,0.95)'
+    });
+    appFrame.prepend(bannerSlot);
+  }
+} catch (e) {
+  console.warn('reserve banner slot failed', e);
+}
+
+let updateShishiTimer = null;
+const queueShishiUpdate = () => {
+  if (updateShishiTimer) return;
+  updateShishiTimer = setTimeout(() => {
+    updateShishiTimer = null;
+    updateShishiLocation();
+  }, MAP_UPDATE_DEBOUNCE_MS);
+};
+map.on('moveend zoomend', queueShishiUpdate);
 
 fetchShops();
 updateShishiLocation();
